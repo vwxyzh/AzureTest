@@ -1,1 +1,1 @@
-﻿<%@ Application Inherits="MyNamespace.WebApiApplication" Language="C#" %>
+﻿<%@ Application Inherits="MvcWebApi.WebApiApplication" Language="C#" %>
