@@ -9,9 +9,10 @@
                 url: $("#address").val(),
                 type: $("#verb").val(),
                 data: $("#content").val(),
-                dataType: "json",
+                dataType: "text",
                 success: function (d, status, xhr) {
-                    $("#result").val(JSON.stringify(d));
+                    //$("#result").val(JSON.stringify(d));
+                    $("#result").val(d);
                 }
             });
         }

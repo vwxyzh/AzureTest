@@ -1,0 +1,19 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<root>
+  <users>
+    <user name="abc" age="5">
+      <roles>
+        <role ref="admin" />
+      </roles>
+    </user>
+    <user name="def" age="2">
+      <roles>
+        <role ref="reader" />
+      </roles>
+    </user>
+  </users>
+  <roles>
+    <role name="admin" />
+    <role name="reader" test="4" />
+  </roles>
+</root>
