@@ -1,0 +1,681 @@
+<?xml version="1.0" encoding="utf-8"?>
+<root xmlns="http://www.sdo.com/reconciliation/"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xsi:type="Application">
+  <references>
+    <refer assemblyName="Sql.Bill_Payment"/>
+    <refer assemblyName="Cls.Strings"/>
+  </references>
+  <func name="DispatchBill" isPrivate="true">
+    <params name="bill"/>
+    <params name="payments"/>
+    <body xsi:type="Eval" expression="(*(
+  [$bill.paystatus]
+  [0: host.CheckBillInit($bill, $payments)] /* 订单状态为初始 */
+  [1: host.CheckBillProcessing($bill, $payments)] /* 订单状态为处理中 */
+  [2: host.CheckBillSubmitted($bill, $payments)] /* 订单状态为已提交 */
+  [3: host.CheckBillSuccessed($bill, $payments)] /* 订单状态为成功 */
+  [4: host.CheckBillException($bill, $payments)] /* 订单状态为异常 */
+  [5: host.CheckBillFailed($bill, $payments)] /* 订单状态为失败 */
+  [6: host.CheckBillRefunding($bill, $payments)] /* 订单状态为退款中 */
+  [7: host.CheckBillPartialRefunded($bill, $payments)] /* 订单状态为部分退款 */
+  [8: host.CheckBillRefunded($bill, $payments)] /* 订单状态为已退款 */
+  [?: host.ReportBillStatusUnknown($bill)] /* 未知的订单状态 */
+)*)"/>
+  </func>
+  <func name="ReportBillStatusUnknown" isPrivate="true">
+    <params name="bill"/>
+    <body xsi:type="ReportDetail">
+      <bizcode xsi:type="Eval" expression="$bill.bizcode"/>
+      <bizno xsi:type="Eval" expression="$bill.billno"/>
+      <conflictCode>BadProcess</conflictCode>
+      <leftAmount xsi:type="Eval" expression="$bill.amount"/>
+      <leftPtId xsi:type="Eval" expression="$bill.ptid"/>
+      <memo xsi:type="Eval" expression="'未知的订单状态:'+$bill.paystatus"/>
+    </body>
+  </func>
+  <func name="CheckBillInit" isPrivate="true">
+    <params name="bill"/>
+    <params name="payments"/>
+    <body xsi:type="ForEach" desc="初始状态不能有任何支付存在">
+      <data xsi:type="Eval" expression="$payments"/>
+      <do xsi:type="Eval" expression="call ReportBadData($bill, this)"/>
+    </body>
+  </func>
+  <func name="CheckBillProcessing" isPrivate="true">
+    <params name="bill"/>
+    <params name="payments"/>
+    <body xsi:type="If">
+      <condition xsi:type="Eval" expression="$bill.batchno > 0"/>
+      <then xsi:type="Block">
+        <line xsi:type="Define" name="sps">
+          <value xsi:type="Eval" expression="
+$payments.findall((x) ->
+  $x.batchno == $bill.batchno
+  and $x.paystatus == 3
+)"/>
+        </line>
+        <line xsi:type="If">
+          <condition xsi:type="Eval" expression="$sps.count == 0"/>
+          <then xsi:type="Eval" expression="call ReportMissing($bill, '3')"/>
+        </line>
+        <line xsi:type="ForEach">
+          <data xsi:type="Eval" expression="
+$payments.findall((x) ->
+  $x.batchno == $bill.batchno
+  or $x.paystatus==6
+  or $x.paystatus==7
+  or $x.paystatus==8
+)"/>
+          <do xsi:type="Eval" expression="call ReportBadData($bill, this)"/>
+        </line>
+        <line xsi:type="Eval" expression="call CheckOtherBatchPayments($bill, $payments)"/>
+      </then>
+      <else xsi:type="ForEach">
+        <data xsi:type="Eval" expression="
+$payments.findall((x) ->
+  $x.paystatus==3
+  or $x.paystatus==6
+  or $x.paystatus==7
+  or $x.paystatus==8
+)"/>
+        <do xsi:type="Eval" expression="call ReportBadData($bill, this)"/>
+      </else>
+    </body>
+  </func>
+  <func name="CheckBillSubmitted" isPrivate="true">
+    <params name="bill"/>
+    <params name="payments"/>
+    <body xsi:type="Block">
+      <line xsi:type="ForEach">
+        <data xsi:type="Eval" expression="
+$payments.findall((x) ->
+  $x.paystatus!=0
+  and $x.paystatus!=2
+  and $x.paystatus!=5
+)"/>
+        <do xsi:type="Eval" expression="call ReportBadData($bill, this)"/>
+      </line>
+      <line xsi:type="Define" name="sps">
+        <value xsi:type="Eval" expression="$payments.findall((x) -> $x.paystatus==2)"/>
+      </line>
+      <line xsi:type="If">
+        <condition xsi:type="Eval" expression="$sps.count > 1"/>
+        <then xsi:type="Eval" expression="call ReportBadDuplex($bill, $sps)"/>
+        <else xsi:type="If">
+          <condition xsi:type="Eval" expression="$sps.count == 0"/>
+          <then xsi:type="Eval" expression="call ReportMissing($bill, '2')"/>
+        </else>
+      </line>
+    </body>
+  </func>
+  <func name="CheckBillSuccessed" isPrivate="true">
+    <params name="bill"/>
+    <params name="payments"/>
+    <body xsi:type="If">
+      <condition xsi:type="Eval" expression="$bill.batchno>0"/>
+      <then xsi:type="Block" desc="version 3.1">
+        <line xsi:type="ForEach">
+          <data xsi:type="Eval" expression="
+$payments.findall((x) ->
+  $x.batchno == $bill.batchno
+  and $x.paystatus!=3
+)"/>
+          <do xsi:type="Eval" expression="call ReportBadData($bill, this)"/>
+        </line>
+        <line xsi:type="Eval" expression="call CheckOtherBatchPayments($bill,$payments)"/>
+      </then>
+      <else xsi:type="Block" desc="version 3.0">
+        <line xsi:type="ForEach">
+          <data xsi:type="Eval" expression="
+$payments.findall((x) ->
+  $x.paystatus!=0
+  and $x.paystatus!=1
+  and $x.paystatus!=3
+  and $x.paystatus!=5
+)"/>
+          <do xsi:type="Eval" expression="call ReportBadData($bill, this)"/>
+        </line>
+        <line xsi:type="Define" name="sp">
+          <value xsi:type="Eval" expression="$payments.findall((x) -> $x.paystatus==3)"/>
+        </line>
+        <line xsi:type="If">
+          <condition xsi:type="Eval" expression="$sp.count==0"/>
+          <then xsi:type="Eval" expression="call ReportMissing($bill, '3')"/>
+        </line>
+        <line xsi:type="If">
+          <condition xsi:type="Eval" expression="$sp.count>1"/>
+          <then xsi:type="Eval" expression="call ReportBadDuplex($bill, $sp)"/>
+        </line>
+      </else>
+    </body>
+  </func>
+  <func name="CheckBillException" isPrivate="true">
+    <params name="bill"/>
+    <params name="payments"/>
+    <body xsi:type="Block">
+      <line xsi:type="ForEach">
+        <data xsi:type="Eval" expression="
+$payments.findall((x) ->
+  $x.paystatus!=0
+  and $x.paystatus!=1
+  and $x.paystatus!=4
+  and $x.paystatus!=5
+)"/>
+        <do xsi:type="Eval" expression="call ReportBadData($bill, this)"/>
+      </line>
+      <line xsi:type="Define" name="eps">
+        <value xsi:type="Eval" expression="$payments.findall((x) -> $x.paystatus==4)"/>
+      </line>
+      <line xsi:type="If">
+        <condition xsi:type="Eval" expression="$eps.count > 1"/>
+        <then xsi:type="Eval" expression="call ReportBadDuplex($bill, $eps)"/>
+        <else xsi:type="If">
+          <condition xsi:type="Eval" expression="$eps.count == 0"/>
+          <then xsi:type="Eval" expression="call ReportMissing($bill, '4')"/>
+        </else>
+      </line>
+    </body>
+  </func>
+  <func name="CheckBillFailed" isPrivate="true">
+    <params name="bill"/>
+    <params name="payments"/>
+    <body xsi:type="Block">
+      <line xsi:type="Define" name="fps">
+        <value xsi:type="Eval" expression="
+$payments.findall((x) ->
+  $x.paystatus == 5
+  and $x.batchno == $bill.batchno
+)"/>
+      </line>
+      <line xsi:type="If">
+        <condition xsi:type="Eval" expression="$fps.count>1"/>
+        <then xsi:type="Eval" expression="call ReportBadDuplex($bill, $fps)"/>
+        <else xsi:type="If">
+          <condition xsi:type="Eval" expression="$fps.count==0"/>
+          <then xsi:type="Eval" expression="call ReportMissing($bill, '5')"/>
+          <else xsi:type="If">
+            <condition xsi:type="Eval" expression="$bill.batchno > 0"/>
+            <then xsi:type="Block" desc="version 3.1">
+              <line xsi:type="Define" name="fpIndex">
+                <value xsi:type="Eval" expression="$fps[0].paymentindex"/>
+              </line>
+              <line xsi:type="ForEach">
+                <data xsi:type="Eval" expression="
+$payments.findall((x) ->
+  $x.batchno == $bill.batchno
+  and $fpIndex > $x.paymentindex
+  and $x.paystatus != 3
+  and $x.paystatus != 5
+  and $x.paystatus != 6
+  and $x.paystatus != 8
+)"/>
+                <do xsi:type="Eval" expression="call ReportBadData($bill, this)"/>
+              </line>
+              <line xsi:type="ForEach">
+                <data xsi:type="Eval" expression="
+$payments.findall((x) ->
+  $x.batchno == $bill.batchno
+  and $x.paymentindex > $fpIndex
+  and $x.paystatus != 0
+)"/>
+                <do xsi:type="Eval" expression="call ReportBadData($bill, this)"/>
+              </line>
+              <line xsi:type="ForEach">
+                <data xsi:type="Eval" expression="
+$payments.findall((x) ->
+  $x.batchno != $bill.batchno
+  and $x.paystatus != 0
+  and $x.paystatus != 1
+  and $x.paystatus != 5
+  and $x.paystatus != 6
+  and $x.paystatus != 8
+)"/>
+                <do xsi:type="Eval" expression="call ReportBadData($bill, this)"/>
+              </line>
+            </then>
+            <else xsi:type="Block" desc="version 3.0">
+              <line xsi:type="ForEach">
+                <data xsi:type="Eval" expression="
+$payments.findall((x) ->
+  $x.batchno != $bill.batchno
+  and $x.paystatus != 0
+  and $x.paystatus != 1
+  and $x.paystatus != 2
+  and $x.paystatus != 5
+)"/>
+                <do xsi:type="Eval" expression="call ReportBadData($bill, this)"/>
+              </line>
+            </else>
+          </else>
+        </else>
+      </line>
+    </body>
+  </func>
+  <func name="CheckBillRefunding" isPrivate="true">
+    <params name="bill"/>
+    <params name="payments"/>
+    <body xsi:type="Block">
+      <line xsi:type="If">
+        <condition xsi:type="Eval" expression="$bill.batchno > 0"/>
+        <then xsi:type="Block" desc="version 3.1">
+          <line xsi:type="ForEach">
+            <data xsi:type="Eval" expression="
+$payments.findall((x) ->
+  $x.batchno == $bill.batchno
+  and $x.paystatus!=3
+  and $x.paystatus!=6
+  and $x.paystatus!=7
+  and $x.paystatus!=8
+)"/>
+            <do xsi:type="Eval" expression="call ReportBadData($bill, this)"/>
+          </line>
+          <line xsi:type="Define" name="rps">
+            <value xsi:type="Eval" expression="
+$payments.findall((x) ->
+  $x.batchno == $bill.batchno
+  and $x.paystatus==6
+)"/>
+          </line>
+          <line xsi:type="If">
+            <condition xsi:type="Eval" expression="$rps.count==0"/>
+            <then xsi:type="Eval" expression="call ReportMissing($bill, '6')"/>
+          </line>
+          <line xsi:type="Eval" expression="call CheckOtherBatchPayments($bill, $payments)"/>
+        </then>
+        <else xsi:type="Block" desc="version 3.0">
+          <line xsi:type="Define" name="rps">
+            <value xsi:type="Eval" expression="$payments.findall((x) -> $x.paystatus==6)"/>
+          </line>
+          <line xsi:type="If">
+            <condition xsi:type="Eval" expression="$rps.count==0"/>
+            <then xsi:type="Eval" expression="call ReportMissing($bill, '6')"/>
+          </line>
+          <line xsi:type="If">
+            <condition xsi:type="Eval" expression="$rps.count>1"/>
+            <then xsi:type="Eval" expression="call ReportBadDuplex($bill, $rps)"/>
+          </line>
+          <line xsi:type="ForEach">
+            <data xsi:type="Eval" expression="
+$payments.findall((x) ->
+  $x.paystatus!=0
+  and $x.paystatus!=1
+  and $x.paystatus!=2
+  and $x.paystatus!=6
+)"/>
+            <do xsi:type="Eval" expression="call ReportBadData($bill, this)"/>
+          </line>
+        </else>
+      </line>
+    </body>
+  </func>
+  <func name="CheckBillPartialRefunded" isPrivate="true">
+    <params name="bill"/>
+    <params name="payments"/>
+    <body xsi:type="Block">
+      <line xsi:type="If">
+        <condition xsi:type="Eval" expression="$bill.batchno>0"/>
+        <then xsi:type="Block" desc="version 3.1">
+          <line xsi:type="ForEach">
+            <data xsi:type="Eval" expression="
+$payments.findall((x) ->
+  $x.batchno == $bill.batchno
+  and $x.paystatus!=3
+  and $x.paystatus!=7
+  and $x.paystatus!=8
+)"/>
+            <do xsi:type="Eval" expression="call ReportBadData($bill, this)"/>
+          </line>
+          <line xsi:type="Define" name="rps">
+            <value xsi:type="Eval" expression="
+$payments.findall((x) ->
+  $x.batchno == $bill.batchno
+  and
+  (
+    $x.paystatus==7
+    or $x.paystatus==8
+  )
+)"/>
+          </line>
+          <line xsi:type="If">
+            <condition xsi:type="Eval" expression="$rps.count==0"/>
+            <then xsi:type="Eval" expression="call ReportMissing($bill, '7 or 8')"/>
+          </line>
+          <line xsi:type="Eval" expression="call CheckOtherBatchPayments($bill, $payments)"/>
+        </then>
+        <else xsi:type="Block" desc="version 3.0">
+          <line xsi:type="Define" name="rps">
+            <value xsi:type="Eval" expression="$payments.findall((x) -> $x.paystatus==7)"/>
+          </line>
+          <line xsi:type="If">
+            <condition xsi:type="Eval" expression="$rps.count==0"/>
+            <then xsi:type="Eval" expression="call ReportMissing($bill, '7')"/>
+          </line>
+          <line xsi:type="If">
+            <condition xsi:type="Eval" expression="$rps.count>1"/>
+            <then xsi:type="Eval" expression="call ReportBadDuplex($bill, $rps)"/>
+          </line>
+          <line xsi:type="ForEach">
+            <data xsi:type="Eval" expression="
+$payments.findall((x) ->
+  $x.paystatus!=0
+  and $x.paystatus!=1
+  and $x.paystatus!=2
+  and $x.paystatus!=7
+)"/>
+            <do xsi:type="Eval" expression="call ReportBadData($bill, this)"/>
+          </line>
+        </else>
+      </line>
+    </body>
+  </func>
+  <func name="CheckBillRefunded" isPrivate="true">
+    <params name="bill"/>
+    <params name="payments"/>
+    <body xsi:type="Block">
+      <line xsi:type="If">
+        <condition xsi:type="Eval" expression="$bill.batchno>0"/>
+        <then xsi:type="Block" desc="version 3.1">
+          <line xsi:type="ForEach">
+            <data xsi:type="Eval" expression="
+$payments.findall((x) ->
+  $x.batchno == $bill.batchno
+  and $x.paystatus != 8
+)"/>
+            <do xsi:type="Eval" expression="call ReportBadData($bill, this)"/>
+          </line>
+          <line xsi:type="Define" name="rps">
+            <value xsi:type="Eval" expression="
+$payments.findall((x) ->
+  $x.batchno == $bill.batchno
+  and $x.paystatus == 8
+)"/>
+          </line>
+          <line xsi:type="If">
+            <condition xsi:type="Eval" expression="$rps.count==0"/>
+            <then xsi:type="Eval" expression="call ReportMissing($bill, '8')"/>
+          </line>
+          <line xsi:type="Eval" expression="call CheckOtherBatchPayments($bill, $payments)"/>
+        </then>
+        <else xsi:type="Block" desc="version 3.0">
+          <line xsi:type="Define" name="rps">
+            <value xsi:type="Eval" expression="$payments.findall((x) -> $x.paystatus==8)"/>
+          </line>
+          <line xsi:type="If">
+            <condition xsi:type="Eval" expression="$rps.count==0"/>
+            <then xsi:type="Eval" expression="call ReportMissing($bill, '8')"/>
+          </line>
+          <line xsi:type="If">
+            <condition xsi:type="Eval" expression="$rps.count>1"/>
+            <then xsi:type="Eval" expression="call ReportBadDuplex($bill, $rps)"/>
+          </line>
+          <line xsi:type="ForEach">
+            <data xsi:type="Eval" expression="
+$payments.findall((x) ->
+  $x.paystatus != 0
+  and $x.paystatus != 1
+  and $x.paystatus != 2
+  and $x.paystatus != 8
+)"/>
+            <do xsi:type="Eval" expression="call ReportBadData($bill, this)"/>
+          </line>
+        </else>
+      </line>
+    </body>
+  </func>
+
+  <func name="CheckOtherBatchPayments" isPrivate="true">
+    <params name="bill"/>
+    <params name="payments"/>
+    <body xsi:type="Block">
+      <line xsi:type="ForEach">
+        <data xsi:type="Eval" expression="
+$payments.findall((x) ->
+  $x.batchno != $bill.batchno
+  and
+  (
+    $x.paystatus in (2, 3)
+    or
+    (
+      $x.paystatus == 4
+      and
+      $x.paychannel not in ('04','07','12','13','19','20')
+    )
+  )
+)"/>
+        <do xsi:type="Eval" expression="call ReportBadData($bill, this)"/>
+      </line>
+    </body>
+  </func>
+
+  <func name="ReportBadData" isPrivate="true">
+    <params name="bill"/>
+    <params name="payment"/>
+    <body xsi:type="ReportDetail">
+      <bizcode xsi:type="Eval" expression="$payment.bizcode"/>
+      <bizno xsi:type="Eval" expression="$payment.billno"/>
+      <conflictCode>BadData</conflictCode>
+      <leftAmount xsi:type="Eval" expression="$payment.amount"/>
+      <leftPtId xsi:type="Eval" expression="$payment.ptid"/>
+      <memo xsi:type="Eval" expression="'支付id:'+$payment.paymentid+',支付状态:'+$payment.paystatus+',订单状态:'+$bill.paystatus"/>
+    </body>
+  </func>
+  <func name="ReportBadDuplex" isPrivate="true">
+    <params name="bill"/>
+    <params name="payments"/>
+    <body xsi:type="ReportDetail">
+      <bizno xsi:type="Eval" expression="$bill.billno"/>
+      <conflictCode>BadData</conflictCode>
+      <leftAmount xsi:type="Eval" expression="$bill.amount"/>
+      <leftPtId xsi:type="Eval" expression="$bill.ptid"/>
+      <memo xsi:type="Eval" expression="'订单状态' + $bill.paystatus +
+'，超过一个订单的状态为' + $payments[0].paystatus +
+',支付id为' + call strJoin($payments.select((x)->$x.paymentid).unwrap(), ',')"/>
+    </body>
+  </func>
+  <func name="ReportMissing" isPrivate="true">
+    <params name="bill"/>
+    <params name="expected"/>
+    <body xsi:type="ReportDetail">
+      <bizcode xsi:type="Eval" expression="$bill.bizcode"/>
+      <bizno xsi:type="Eval" expression="$bill.billno"/>
+      <conflictCode>BadData</conflictCode>
+      <leftAmount xsi:type="Eval" expression="$bill.amount"/>
+      <leftPtId xsi:type="Eval" expression="$bill.ptid"/>
+      <memo xsi:type="Eval" expression="'订单状态:' + $bill.paystatus + ', 未找到期待的支付状态:' + $expected + ''"/>
+    </body>
+  </func>
+  <func name="isOldCardPayment" isPrivate="true">
+    <params name="payments"/>
+    <body xsi:type="Eval" expression="
+{
+  var ps = $payments.orderBy((x)->$x.paymentindex);
+  if ($ps.length == 2)
+    return $ps[0].paychannel == '14' and $ps[1].paychannel == '03';
+  else
+    return false;
+}"/>
+  </func>
+
+  <main xsi:type="ForEach" parallel="2">
+    <data xsi:type="Call" func="getBill_Payment_JoinResult">
+      <params>
+        <param xsi:type="ContextVariable" name="StartTime"/>
+        <param xsi:type="ContextVariable" name="EndTime"/>
+      </params>
+    </data>
+    <do xsi:type="ForEach">
+      <data xsi:type="Eval" expression="this.buffer"/>
+      <do xsi:type="Block">
+        <line xsi:type="If" desc="订单状态为支付成功或之后的状态时">
+          <condition xsi:type="Eval" expression="
+             this.bill.paystatus == 3 or
+             this.bill.paystatus == 6 or
+             this.bill.paystatus == 7 or
+             this.bill.paystatus == 8"/>
+          <then xsi:type="Block">
+            <line xsi:type="Increase">
+              <variable xsi:type="ContextVariable" name="Count1"/>
+            </line>
+            <line xsi:type="Increase" desc="用Payment算不清楚这个。。。放弃了">
+              <variable xsi:type="ContextVariable" name="Count2"/>
+            </line>
+            <line xsi:type="Add">
+              <variable xsi:type="ContextVariable" name="Amount1"/>
+              <delta xsi:type="Eval" expression="this.bill.payamount"/>
+            </line>
+            <line xsi:type="Add">
+              <variable xsi:type="ContextVariable" name="Amount2" desc="用Payment算不清楚这个。。。放弃了"/>
+              <delta xsi:type="Eval" expression="this.bill.payamount"/>
+            </line>
+          </then>
+        </line>
+        <line xsi:type="If">
+          <condition xsi:type="Eval" expression="this.payments == null"/>
+          <then xsi:type="ReportDetail">
+            <bizno xsi:type="Eval" expression="this.bill.billno"/>
+            <conflictCode>RightDataMissing</conflictCode>
+            <leftAmount xsi:type="Eval" expression="this.bill.amount"/>
+            <leftPtId xsi:type="Eval" expression="this.bill.ptid"/>
+          </then>
+          <else xsi:type="Block">
+            <line xsi:type="Eval" expression="call DispatchBill(this.bill, this.payments.items)"/>
+            <line xsi:type="If" desc="比对支付金额">
+              <condition xsi:type="Eval" expression="this.bill.batchno > 0"/>
+              <then xsi:type="Block" desc="比对支付金额 version 3.1">
+                <line xsi:type="Define" name="payedAmount">
+                  <value xsi:type="Eval" expression="
+{
+  if (host.isOldCardPayment(this.payments.items.findall((x) -> $x.batchno == this.bill.batchno)))
+  {
+    var cardPayment = this.payments.items.find((x) -> $x.paychannel == '03');
+    if ($cardPayment.paystatus == 3)
+      return $cardPayment.amount;
+    var balancePayment = this.payments.items.find((x) -> $x.paychannel == '14');
+    if ($balancePayment.paystatus == 3 or
+      $balancePayment.paystatus == 6 or
+      $balancePayment.paystatus == 7 or
+      $balancePayment.paystatus == 8)
+      return $balancePayment.amount;
+    return 0;
+  }
+  else
+    return this.payments.items.findall((x) ->
+      $x.batchno == this.bill.batchno
+      and ($x.paystatus == 3 or $x.paystatus == 6 or $x.paystatus == 7 or $x.paystatus == 8)
+    ).sum((x) -> $x.amount);
+}"/>
+                </line>
+                <line xsi:type="If">
+                  <condition xsi:type="Eval" expression="$payedAmount != this.bill.payamount"/>
+                  <then xsi:type="ReportDetail">
+                    <bizcode xsi:type="Eval" expression="this.bill.bizcode"/>
+                    <bizno xsi:type="Eval" expression="this.bill.billno"/>
+                    <conflictCode>AmountDismatch</conflictCode>
+                    <leftAmount xsi:type="Eval" expression="this.bill.payamount"/>
+                    <rightAmount xsi:type="Eval" expression="$payedAmount"/>
+                    <memo xsi:type="Const" value="payamount"/>
+                  </then>
+                </line>
+              </then>
+              <else xsi:type="Block" desc="比对支付金额 version 3.0">
+                <line xsi:type="Define" name="temp">
+                  <value xsi:type="Eval" expression="
+this.payments.items.findall((x) ->
+  ($x.batchno == 0 or $x.batchno == null)
+  and ($x.paystatus == 3 or $x.paystatus == 6 or $x.paystatus == 7 or $x.paystatus == 8)
+).select((x) -> new
+{
+  bill: this.bill,
+  payment: $x
+})"/>
+                </line>
+                <line xsi:type="If">
+                  <condition xsi:type="Eval" expression="$temp.count == 0"/>
+                  <then xsi:type="If">
+                    <condition xsi:type="Eval" expression="this.bill.payamount>0"/>
+                    <then xsi:type="ReportDetail">
+                      <bizcode xsi:type="Eval" expression="this.bill.bizcode"/>
+                      <bizno xsi:type="Eval" expression="this.bill.billno"/>
+                      <conflictCode>AmountDismatch</conflictCode>
+                      <leftAmount xsi:type="Eval" expression="this.bill.payamount"/>
+                      <rightAmount xsi:type="Const" value="0"/>
+                      <memo xsi:type="Const" value="未找到支付记录，但支付金额大于0"/>
+                    </then>
+                  </then>
+                </line>
+                <line xsi:type="If">
+                  <condition xsi:type="Eval" expression="$temp.count > 1"/>
+                  <then xsi:type="If">
+                    <condition xsi:type="Eval" expression="this.bill.payamount>0"/>
+                    <then xsi:type="ReportDetail">
+                      <bizcode xsi:type="Eval" expression="this.bill.bizcode"/>
+                      <bizno xsi:type="Eval" expression="this.bill.billno"/>
+                      <conflictCode>AmountDismatch</conflictCode>
+                      <leftAmount xsi:type="Eval" expression="this.bill.payamount"/>
+                      <rightAmount xsi:type="Eval" expression="$temp.sum((x) -> x.payment.amount)"/>
+                      <memo xsi:type="Eval" expression="'找到'+$temp.count+'条支付记录(3.0)'"/>
+                    </then>
+                  </then>
+                </line>
+                <line xsi:type="If">
+                  <condition xsi:type="Eval" expression="$temp.count == 1 and $temp[0].payment.amount != this.bill.payamount"/>
+                  <then xsi:type="If">
+                    <condition xsi:type="Eval" expression="this.bill.payamount>0"/>
+                    <then xsi:type="ReportDetail">
+                      <bizcode xsi:type="Eval" expression="this.bill.bizcode"/>
+                      <bizno xsi:type="Eval" expression="this.bill.billno"/>
+                      <conflictCode>AmountDismatch</conflictCode>
+                      <leftAmount xsi:type="Eval" expression="this.bill.payamount"/>
+                      <rightAmount xsi:type="Eval" expression="$temp[0].payment.amount"/>
+                      <memo xsi:type="Eval" expression="'支付金额不匹配(PaymentId='+$temp[0].payment.paymentid+')'"/>
+                    </then>
+                  </then>
+                </line>
+              </else>
+            </line>
+            <line xsi:type="ForEach" desc="比对支付的金额合计for 3.1">
+              <data xsi:type="Eval" expression="
+this.payments.items.where((x) -> $x.batchno > 0)
+.groupBy((x) -> $x.batchno)
+.select((g) -> new
+{
+  bill: this.bill,
+  batchno: $g.key,
+  amount: host.isOldCardPayment($g.Items) ?
+    $g.Items.find((x) -> $x.paychannel == '03').amount :
+    $g.Items.sum((x) -> $x.amount)
+}).where((x) -> $x.amount != this.bill.amount)"/>
+              <do xsi:type="ReportDetail">
+                <bizcode xsi:type="Eval" expression="this.bill.bizcode"/>
+                <bizno xsi:type="Eval" expression="this.bill.billno"/>
+                <conflictCode>AmountDismatch</conflictCode>
+                <leftAmount xsi:type="Eval" expression="this.bill.amount"/>
+                <rightAmount xsi:type="Eval" expression="this.amount"/>
+                <memo xsi:type="Eval" expression="'批次号为'+this.batchno+'的支付金额与订单金额不匹配'"/>
+              </do>
+            </line>
+            <line xsi:type="ForEach" desc="比对支付的金额合计for 3.0">
+              <data xsi:type="Eval" expression="
+this.payments.items.where((x) -> $x.batchno == null or $x.batchno == 0)
+.where((x) -> this.bill.amount != $x.amount)
+.select((x) -> new
+{
+  bill: this.bill,
+  payment: $x
+})"/>
+              <do xsi:type="ReportDetail">
+                <bizcode xsi:type="Eval" expression="this.bill.bizcode"/>
+                <bizno xsi:type="Eval" expression="this.bill.billno"/>
+                <conflictCode>AmountDismatch</conflictCode>
+                <leftAmount xsi:type="Eval" expression="this.bill.amount"/>
+                <rightAmount xsi:type="Eval" expression="this.payment.amount"/>
+                <memo xsi:type="Eval" expression="'支付订单号为'+this.payment.paymentid+'的支付金额与订单金额不匹配'"/>
+              </do>
+            </line>
+          </else>
+        </line>
+      </do>
+    </do>
+  </main>
+</root>
